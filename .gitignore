@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Data (downloaded, not committed)
+data/raw/
+*.csv
+
+# Models / results
+*.pt
+*.pth
+*.pkl
+*.joblib
+models/
+results/*.png
+results/*.json
+!results/.gitkeep
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
