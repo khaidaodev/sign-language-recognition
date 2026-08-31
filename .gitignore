@@ -8,6 +8,7 @@ venv/
 
 # Data (downloaded, not committed)
 data/raw/
+data/mediapipe_models/
 *.csv
 
 # Models / results

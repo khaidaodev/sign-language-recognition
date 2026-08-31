@@ -4,7 +4,8 @@ torch>=2.1
 scikit-learn>=1.3
 matplotlib>=3.7
 seaborn>=0.12
-mediapipe==0.10.18  # 1.x drops the solutions API this project uses, don't upgrade blindly
-numpy>=1.24,<2  # mediapipe 0.10.x pulls in numpy<2
+mediapipe>=0.10.30  # older pins (<0.10.30) still had the legacy mp.solutions API; this project
+                    # uses the newer Tasks API instead (see src/pose_extraction.py), works on any
+                    # version that has it, so no need to chase an exact number
 opencv-python>=4.9
 pytest>=7.4
