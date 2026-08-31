@@ -1,0 +1,143 @@
+"""
+Downloads the actual video clips for whichever subset wlasl_metadata.py picked out, and trims
+each one down to the frame range the dataset says the sign actually happens in (frame_start /
+frame_end, some clips have extra footage either side of the sign itself, frame_end of -1 means
+"goes to the end of the clip").
+
+This dataset is old and the videos live on a scattered mix of small ASL dictionary sites, a lot
+of those links are dead by now (sites shut down, moved, started blocking hotlinking), and the
+YouTube ones need yt-dlp installed separately. So this is written to expect a lot of failures:
+it downloads what it can, skips and logs anything that fails, and keeps going instead of stopping
+on the first dead link. Whatever gets downloaded successfully is enough to prove the pipeline
+works end to end, doesn't need every single clip to succeed.
+
+Run it with:
+    python src/video_downloader.py
+"""
+
+import json
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import cv2
+import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from wlasl_metadata import SUBSET_PATH  # noqa: E402
+
+ROOT = Path(__file__).resolve().parent.parent
+VIDEO_DIR = ROOT / "data" / "raw" / "videos"
+
+# some of these old dictionary sites reject requests with no browser-looking user agent
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
+
+
+def is_youtube(url: str) -> bool:
+    return "youtube.com" in url or "youtu.be" in url
+
+
+def download_direct(url: str, out_path: Path) -> bool:
+    try:
+        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
+        resp.raise_for_status()
+        out_path.write_bytes(resp.content)
+        return True
+    except requests.RequestException as e:
+        print(f"  failed ({e.__class__.__name__}): {url}")
+        return False
+
+
+def download_youtube(url: str, out_path: Path) -> bool:
+    if shutil.which("yt-dlp") is None:
+        print(f"  skipped, yt-dlp not installed: {url}")
+        return False
+    try:
+        subprocess.run(
+            ["yt-dlp", "-f", "mp4", "-o", str(out_path), url],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        return out_path.exists()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print(f"  failed (yt-dlp): {url} ({e})")
+        return False
+
+
+def trim_clip(path: Path, frame_start: int, frame_end: int) -> None:
+    """Cuts the clip down to [frame_start, frame_end] in place."""
+    if frame_start <= 1 and frame_end == -1:
+        return  # whole clip is the sign already, nothing to trim
+
+    cap = cv2.VideoCapture(str(path))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    tmp_path = path.with_suffix(".trim.mp4")
+    writer = cv2.VideoWriter(str(tmp_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+
+    frame_idx = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        frame_idx += 1
+        if frame_idx < frame_start:
+            continue
+        if frame_end != -1 and frame_idx > frame_end:
+            break
+        writer.write(frame)
+
+    cap.release()
+    writer.release()
+    tmp_path.replace(path)
+
+
+def download_subset(subset_path: Path = SUBSET_PATH):
+    glosses = json.loads(subset_path.read_text())
+    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+
+    ok_count, fail_count = 0, 0
+    for gloss_entry in glosses:
+        gloss = gloss_entry["gloss"]
+        gloss_dir = VIDEO_DIR / gloss
+        gloss_dir.mkdir(exist_ok=True)
+
+        for inst in gloss_entry["instances"]:
+            out_path = gloss_dir / f"{inst['video_id']}.mp4"
+            if out_path.exists():
+                ok_count += 1
+                continue
+
+            print(f"{gloss}/{inst['video_id']}: {inst['url']}")
+            success = (
+                download_youtube(inst["url"], out_path)
+                if is_youtube(inst["url"])
+                else download_direct(inst["url"], out_path)
+            )
+
+            if success:
+                try:
+                    trim_clip(out_path, inst["frame_start"], inst["frame_end"])
+                    ok_count += 1
+                except Exception as e:
+                    print(f"  trim failed: {e}")
+                    fail_count += 1
+            else:
+                fail_count += 1
+
+            time.sleep(0.3)  # be polite to whatever's left of these old dictionary sites
+
+    print(f"\ndone: {ok_count} downloaded, {fail_count} failed/skipped")
+    return ok_count, fail_count
+
+
+if __name__ == "__main__":
+    download_subset()

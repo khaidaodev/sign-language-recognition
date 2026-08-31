@@ -1,9 +1,10 @@
 pandas>=2.0
-numpy>=1.24
 requests>=2.31
 torch>=2.1
 scikit-learn>=1.3
 matplotlib>=3.7
 seaborn>=0.12
-mediapipe>=0.10
+mediapipe==0.10.18  # 1.x drops the solutions API this project uses, don't upgrade blindly
+numpy>=1.24,<2  # mediapipe 0.10.x pulls in numpy<2
 opencv-python>=4.9
+pytest>=7.4

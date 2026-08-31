@@ -13,6 +13,12 @@ It's a well known dataset originally on Kaggle, called ["Sign Language MNIST"](h
 
 Couldn't get the actual Kaggle download working in the environment I built this in, so `data_loading.py` pulls the same CSVs from a GitHub copy instead: [gurpreet0610/sign_language_CNN](https://github.com/gurpreet0610/sign_language_CNN).
 
-## Word-level video data (not used yet)
+## Word-level video data (WLASL, stage 2)
 
-For the next stage (recognising whole signed words from video), planning to use [WLASL](https://github.com/dxli94/WLASL), starting with a small subset of the most common words rather than the full ~2000 word vocabulary.
+For stage 2 (recognising whole signed words from video), using [WLASL](https://github.com/dxli94/WLASL) (Word-Level American Sign Language). `src/wlasl_metadata.py` downloads the full 2,000-word index and picks out the words with the most example videos, capped per word, rather than the full ~21,000-clip dataset.
+
+Not the "official" WLASL100 split some papers use, that's a fixed word list published separately, this is my own subset built the same way (rank by number of example videos, take the top N), since I couldn't find that exact list published anywhere downloadable.
+
+A lot of the video links in this dataset are dead now (old ASL dictionary sites that have since shut down or started blocking hotlinking, plus a chunk of the clips are unlisted/removed YouTube videos), `src/video_downloader.py` is written to expect that: it downloads whatever it can, skips and logs the rest, no need for every clip to succeed for this to work. YouTube-hosted clips need `yt-dlp` installed separately to fetch.
+
+Downloaded clips go in `data/raw/videos/<word>/<video_id>.mp4`, extracted keypoint sequences go in `data/processed/<word>/<video_id>.npy`, neither committed (see `.gitignore`).
