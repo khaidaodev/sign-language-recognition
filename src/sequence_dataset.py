@@ -141,6 +141,39 @@ def mirror_keypoints(sequence: np.ndarray) -> np.ndarray:
     return mirrored
 
 
+def jitter_keypoints(sequence: np.ndarray, rng: np.random.Generator, std: float = 0.01) -> np.ndarray:
+    """Adds a small amount of random noise to every detected coordinate, meant to stand in for
+    the kind of natural variation there'd be between two real takes of the same sign, nobody
+    signs the exact same word two pixel-identical times in a row. std is in the same normalized
+    units normalize_keypoints() puts everything in (shoulder widths), small enough to nudge the
+    numbers without turning one sign into a different one.
+
+    Visibility (pose column 3) and anything zero-filled (the whole pose block, or a hand that
+    wasn't detected this frame, see pose_extraction.py) are left alone, jittering a landmark that
+    was never actually detected would fake a detection that didn't happen.
+    """
+    jittered = sequence.astype(np.float32).copy()
+    for frame in jittered:
+        pose = frame[: POSE_LANDMARKS * 4].reshape(POSE_LANDMARKS, 4)
+        left_hand = frame[POSE_LANDMARKS * 4 : POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3].reshape(
+            HAND_LANDMARKS, 3
+        )
+        right_hand = frame[POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3 :].reshape(HAND_LANDMARKS, 3)
+
+        if pose.any():
+            pose[:, :3] += rng.normal(0.0, std, size=(POSE_LANDMARKS, 3)).astype(np.float32)
+        if left_hand.any():
+            left_hand += rng.normal(0.0, std, size=(HAND_LANDMARKS, 3)).astype(np.float32)
+        if right_hand.any():
+            right_hand += rng.normal(0.0, std, size=(HAND_LANDMARKS, 3)).astype(np.float32)
+
+        frame[: POSE_LANDMARKS * 4] = pose.flatten()
+        frame[POSE_LANDMARKS * 4 : POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3] = left_hand.flatten()
+        frame[POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3 :] = right_hand.flatten()
+
+    return jittered
+
+
 def pad_or_truncate(sequence: np.ndarray, max_frames: int = MAX_FRAMES) -> np.ndarray:
     """Makes any (num_frames, feature_size) array exactly (max_frames, feature_size): pads with
     zero rows if it's short, cuts off the end if it's long."""
@@ -210,28 +243,52 @@ class KeypointSequenceDataset(Dataset):
         return len(self.gloss_to_label)
 
 
-class MirrorAugmentedDataset(Dataset):
-    """Wraps a dataset (meant to be a *training* split, see below) of real clips and doubles it:
-    every real clip's index maps to two items here, the original and its left-right mirrored
-    version (mirror_keypoints above).
+class AugmentedTrainDataset(Dataset):
+    """Wraps a dataset (meant to be a *training* split, see below) with light augmentation that
+    gets re-rolled fresh every time an item is fetched: a coin flip on left-right mirroring
+    (mirror_keypoints), plus a bit of coordinate jitter (jitter_keypoints).
 
-    Only ever wrap a training split with this, never validation. If a mirrored copy of a clip
-    ended up in the validation set while training saw the original (or vice versa), that's the
-    model getting evaluated on something awfully close to what it trained on, val accuracy would
-    look better than the model actually generalizes."""
+    views_per_clip makes this look views_per_clip times longer than the dataset it wraps, every
+    real clip gets that many "slots", each independently randomized. Since the randomization
+    happens fresh on every __getitem__ call (not cached), the same slot even looks different
+    epoch to epoch, so across a multi-epoch run the model sees a lot more real variety out of the
+    same underlying clips than a single fixed extra copy would give it, without downloading
+    anything new.
 
-    def __init__(self, base_dataset):
+    Only ever wrap a training split with this, never validation. If validation clips got
+    mirrored/jittered too, the model would just be evaluated on a slightly different view of
+    something it may have already trained on, val accuracy would look better than the model
+    actually generalizes.
+
+    rng is a numpy Generator the caller controls (rather than this class seeding its own),
+    training stays reproducible run to run for the same seed, same as everything else here."""
+
+    def __init__(
+        self,
+        base_dataset,
+        rng: np.random.Generator,
+        views_per_clip: int = 2,
+        mirror_prob: float = 0.5,
+        jitter_std: float = 0.01,
+    ):
         self.base_dataset = base_dataset
+        self.rng = rng
+        self.views_per_clip = views_per_clip
+        self.mirror_prob = mirror_prob
+        self.jitter_std = jitter_std
 
     def __len__(self) -> int:
-        return len(self.base_dataset) * 2
+        return len(self.base_dataset) * self.views_per_clip
 
     def __getitem__(self, idx: int):
-        real_idx, mirror = divmod(idx, 2)
+        real_idx = idx // self.views_per_clip
         sequence, label = self.base_dataset[real_idx]
-        if mirror:
-            sequence = torch.from_numpy(mirror_keypoints(sequence.numpy())).float()
-        return sequence, label
+        sequence = sequence.numpy()
+        if self.rng.random() < self.mirror_prob:
+            sequence = mirror_keypoints(sequence)
+        if self.jitter_std > 0:
+            sequence = jitter_keypoints(sequence, self.rng, std=self.jitter_std)
+        return torch.from_numpy(sequence).float(), label
 
 
 if __name__ == "__main__":

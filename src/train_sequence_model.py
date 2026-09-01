@@ -14,12 +14,13 @@ Run it with:
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader, random_split
 
 from pose_extraction import FRAME_VECTOR_SIZE
-from sequence_dataset import KeypointSequenceDataset, MirrorAugmentedDataset
+from sequence_dataset import AugmentedTrainDataset, KeypointSequenceDataset
 from sequence_model import SignLSTM
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -79,9 +80,9 @@ def train(dataset: KeypointSequenceDataset | None = None):
     train_set, val_set = random_split(
         dataset, [train_size, val_size], generator=torch.Generator().manual_seed(RANDOM_STATE)
     )
-    # mirror-augment only the training half, val stays real, unmirrored clips throughout, see
-    # MirrorAugmentedDataset's docstring for why that split matters
-    augmented_train_set = MirrorAugmentedDataset(train_set)
+    # augment only the training half, val stays real, unmodified clips throughout, see
+    # AugmentedTrainDataset's docstring for why that split matters
+    augmented_train_set = AugmentedTrainDataset(train_set, rng=np.random.default_rng(RANDOM_STATE))
 
     train_loader = DataLoader(augmented_train_set, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=BATCH_SIZE)
@@ -91,8 +92,8 @@ def train(dataset: KeypointSequenceDataset | None = None):
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
     print(
-        f"{len(dataset)} clips ({train_size} train, mirrored to {len(augmented_train_set)} / "
-        f"{val_size} val), {dataset.num_classes} words"
+        f"{len(dataset)} clips ({train_size} train, augmented to {len(augmented_train_set)} "
+        f"views/epoch / {val_size} val), {dataset.num_classes} words"
     )
 
     best_val_acc = 0.0

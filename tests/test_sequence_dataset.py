@@ -14,8 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pose_extraction import FRAME_VECTOR_SIZE, HAND_LANDMARKS, POSE_LANDMARKS  # noqa: E402
 from sequence_dataset import (  # noqa: E402
+    AugmentedTrainDataset,
     KeypointSequenceDataset,
-    MirrorAugmentedDataset,
+    jitter_keypoints,
     mirror_keypoints,
     normalize_keypoints,
     pad_or_truncate,
@@ -171,6 +172,35 @@ def test_mirror_keypoints_leaves_a_padded_zero_frame_zero():
     assert np.all(mirrored == 0)
 
 
+def test_jitter_keypoints_moves_detected_coordinates_by_roughly_the_given_std():
+    frame = _frame_with_distinct_landmarks()
+    rng = np.random.default_rng(0)
+    jittered = jitter_keypoints(np.stack([frame] * 300), rng, std=0.05)
+
+    original_x = frame[: POSE_LANDMARKS * 4].reshape(POSE_LANDMARKS, 4)[:, 0]
+    diffs = [
+        (f[: POSE_LANDMARKS * 4].reshape(POSE_LANDMARKS, 4)[:, 0] - original_x) for f in jittered
+    ]
+    diffs = np.concatenate(diffs)
+    assert diffs.std() == pytest.approx(0.05, rel=0.3)
+    assert diffs.mean() == pytest.approx(0.0, abs=0.01)
+
+
+def test_jitter_keypoints_leaves_visibility_untouched():
+    frame = _frame_with_distinct_landmarks()
+    rng = np.random.default_rng(0)
+    jittered = jitter_keypoints(np.stack([frame]), rng, std=0.05)[0]
+    pose_visibility = jittered[: POSE_LANDMARKS * 4].reshape(POSE_LANDMARKS, 4)[:, 3]
+    assert np.all(pose_visibility == 1.0)
+
+
+def test_jitter_keypoints_leaves_a_zero_filled_frame_exactly_zero():
+    blank = _blank_frame()
+    rng = np.random.default_rng(0)
+    jittered = jitter_keypoints(np.stack([blank]), rng, std=0.05)[0]
+    assert np.all(jittered == 0)
+
+
 class _ListDataset:
     """Minimal stand-in for a Dataset, just wraps a plain list of (sequence, label) tuples."""
 
@@ -184,32 +214,68 @@ class _ListDataset:
         return self.items[idx]
 
 
-def test_mirror_augmented_dataset_doubles_the_length():
-    base = _ListDataset([(torch.zeros(1, FRAME_VECTOR_SIZE), 0), (torch.zeros(1, FRAME_VECTOR_SIZE), 1)])
-    augmented = MirrorAugmentedDataset(base)
-    assert len(augmented) == 4
+class _FixedRng:
+    """Fake rng with a fixed .random() output (to force or prevent the mirror coin flip
+    deterministically) and a fixed .normal() output (so jitter's contribution is predictable
+    too), instead of pulling in real randomness for these tests."""
+
+    def __init__(self, random_value, normal_value=0.0):
+        self._random_value = random_value
+        self._normal_value = normal_value
+
+    def random(self):
+        return self._random_value
+
+    def normal(self, loc, scale, size):
+        return np.full(size, self._normal_value, dtype=np.float32)
 
 
-def test_mirror_augmented_dataset_even_indices_are_the_originals():
-    frame = torch.from_numpy(_frame_with_distinct_landmarks()).float().unsqueeze(0)
-    base = _ListDataset([(frame, 7)])
-    augmented = MirrorAugmentedDataset(base)
-
-    sequence, label = augmented[0]
-    assert label == 7
-    assert torch.equal(sequence, frame)
+def test_augmented_train_dataset_length_scales_with_views_per_clip():
+    base = _ListDataset(
+        [(torch.zeros(1, FRAME_VECTOR_SIZE), 0), (torch.zeros(1, FRAME_VECTOR_SIZE), 1)]
+    )
+    augmented = AugmentedTrainDataset(base, rng=np.random.default_rng(0), views_per_clip=3)
+    assert len(augmented) == 6
 
 
-def test_mirror_augmented_dataset_odd_indices_are_mirrored():
+def test_augmented_train_dataset_mirrors_when_the_coin_flip_says_so():
     frame_array = _frame_with_distinct_landmarks()
     frame = torch.from_numpy(frame_array).float().unsqueeze(0)
     base = _ListDataset([(frame, 7)])
-    augmented = MirrorAugmentedDataset(base)
+    # random() returns 0.0, which is < mirror_prob (0.5), so this always mirrors
+    augmented = AugmentedTrainDataset(base, rng=_FixedRng(0.0), mirror_prob=0.5, jitter_std=0)
 
-    sequence, label = augmented[1]
+    sequence, label = augmented[0]
     assert label == 7
     expected = mirror_keypoints(np.stack([frame_array]))
     assert sequence.numpy() == pytest.approx(expected)
+
+
+def test_augmented_train_dataset_does_not_mirror_when_the_coin_flip_says_no():
+    frame_array = _frame_with_distinct_landmarks()
+    frame = torch.from_numpy(frame_array).float().unsqueeze(0)
+    base = _ListDataset([(frame, 7)])
+    # random() returns 0.99, which is >= mirror_prob (0.5), so this never mirrors
+    augmented = AugmentedTrainDataset(base, rng=_FixedRng(0.99), mirror_prob=0.5, jitter_std=0)
+
+    sequence, label = augmented[0]
+    assert label == 7
+    assert sequence.numpy() == pytest.approx(np.stack([frame_array]))
+
+
+def test_augmented_train_dataset_applies_jitter_when_jitter_std_is_positive():
+    frame_array = _frame_with_distinct_landmarks()
+    frame = torch.from_numpy(frame_array).float().unsqueeze(0)
+    base = _ListDataset([(frame, 7)])
+    # never mirrors (0.99 >= 0.5), but every jitter draw is a fixed +0.05
+    augmented = AugmentedTrainDataset(
+        base, rng=_FixedRng(0.99, normal_value=0.05), mirror_prob=0.5, jitter_std=0.05
+    )
+
+    sequence, label = augmented[0]
+    pose_x = sequence.numpy()[0, : POSE_LANDMARKS * 4].reshape(POSE_LANDMARKS, 4)[:, 0]
+    original_x = frame_array[: POSE_LANDMARKS * 4].reshape(POSE_LANDMARKS, 4)[:, 0]
+    assert pose_x == pytest.approx(original_x + 0.05)
 
 
 @pytest.fixture

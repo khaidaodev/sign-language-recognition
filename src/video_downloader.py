@@ -31,7 +31,6 @@ from wlasl_metadata import SUBSET_PATH  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 VIDEO_DIR = ROOT / "data" / "raw" / "videos"
 
-# some of these old dictionary sites reject requests with no browser-looking user agent
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
@@ -59,21 +58,51 @@ def download_youtube(url: str, out_path: Path) -> bool:
         return False
     try:
         subprocess.run(
-            ["yt-dlp", "-f", "mp4", "-o", str(out_path), url],
+            [
+                "yt-dlp",
+                # plenty of YouTube videos these days don't have a single combined
+                # video+audio mp4 format (just requesting "-f mp4" fails for those), so this
+                # asks for the best mp4 video + best m4a audio and has yt-dlp merge them (needs
+                # ffmpeg installed), falling back to whatever's best if that specific combo isn't
+                # available
+                "-f",
+                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--merge-output-format",
+                "mp4",
+                "-o",
+                str(out_path),
+                url,
+            ],
             check=True,
             capture_output=True,
             timeout=120,
         )
         return out_path.exists()
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        print(f"  failed (yt-dlp): {url} ({e})")
+    except subprocess.CalledProcessError as e:
+        # yt-dlp's actual complaint (age-restricted, blocked, video removed, needs sign-in, etc.)
+        # is on stderr, "exit status 1" on its own doesn't say whether this is a genuinely dead
+        # video or something worth digging into
+        detail = extract_yt_dlp_error(e.stderr)
+        print(f"  failed (yt-dlp): {url} ({detail})")
+        return False
+    except subprocess.TimeoutExpired:
+        print(f"  failed (yt-dlp timeout): {url}")
         return False
 
 
+def extract_yt_dlp_error(stderr: bytes | None) -> str:
+    """Pulls the last non-empty line out of yt-dlp's stderr, that's reliably where its actual
+    error message ends up (things like "ERROR: [youtube] ...: Sign in to confirm you're not a
+    bot"), everything above it is usually just progress/warning noise."""
+    if not stderr:
+        return "no error output"
+    lines = [line for line in stderr.decode(errors="replace").splitlines() if line.strip()]
+    return lines[-1] if lines else "no error output"
+
+
 def trim_clip(path: Path, frame_start: int, frame_end: int) -> None:
-    """Cuts the clip down to [frame_start, frame_end] in place."""
     if frame_start <= 1 and frame_end == -1:
-        return  # whole clip is the sign already, nothing to trim
+        return
 
     cap = cv2.VideoCapture(str(path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
@@ -133,7 +162,7 @@ def download_subset(subset_path: Path = SUBSET_PATH):
             else:
                 fail_count += 1
 
-            time.sleep(0.3)  # be polite to whatever's left of these old dictionary sites
+            time.sleep(0.3)
 
     print(f"\ndone: {ok_count} downloaded, {fail_count} failed/skipped")
     return ok_count, fail_count
