@@ -8,7 +8,7 @@ won't, this dataset's links are old). Written now so it's ready to go the moment
 data, rather than waiting until then to write it.
 
 Run it with:
-    python src/train_sequence_model.py
+    python3 src/train_sequence_model.py
 """
 
 import json
@@ -30,6 +30,16 @@ RANDOM_STATE = 42
 EPOCHS = 20
 BATCH_SIZE = 8
 LEARNING_RATE = 1e-3
+WEIGHT_DECAY = 1e-4  # a bit of L2 regularization, real training data here is thin (a handful of
+                      # clips per word), so the model overfits fast without some push-back
+
+# With a real but small download batch, some words only end up with 3-4 example clips while
+# others have 8-10. Every extra word makes classification harder without necessarily adding much
+# signal if there's barely any data behind it, so this caps the vocabulary to the best-covered
+# words rather than training on the full downloaded set right away. See
+# sequence_dataset.py's KeypointSequenceDataset for how the cutoff is chosen. Bump this up (or
+# set to None) once more clips have been downloaded per word.
+MAX_WORDS = 40
 
 
 def run_epoch(model, loader, criterion, optimizer=None):
@@ -60,7 +70,7 @@ def train(dataset: KeypointSequenceDataset | None = None):
     """dataset can be passed in directly (mainly so tests can point this at a small fake
     dataset instead of the real data/processed/ folder), otherwise this loads the real one."""
     torch.manual_seed(RANDOM_STATE)
-    dataset = dataset or KeypointSequenceDataset()
+    dataset = dataset or KeypointSequenceDataset(max_words=MAX_WORDS)
 
     # 80/20 train/val split, same idea as the fingerspelling CNN in stage 1: hold some clips
     # back so the accuracy number below actually means the model never trained on them
@@ -75,7 +85,7 @@ def train(dataset: KeypointSequenceDataset | None = None):
 
     model = SignLSTM(input_size=FRAME_VECTOR_SIZE, num_classes=dataset.num_classes)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
     print(f"{len(dataset)} clips ({train_size} train / {val_size} val), {dataset.num_classes} words")
 

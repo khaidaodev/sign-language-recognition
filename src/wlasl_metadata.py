@@ -16,7 +16,7 @@ the same way papers describe it (rank by instance count, take the top N), since 
 that exact split published anywhere I could download.
 
 Run it with:
-    python src/wlasl_metadata.py
+    python3 src/wlasl_metadata.py
 """
 
 import json
@@ -58,11 +58,40 @@ def build_subset(all_glosses, num_words=100, max_instances_per_word=10):
     return subset
 
 
+def build_subset_for_glosses(all_glosses, wanted_glosses, max_instances_per_word=10):
+    """Same idea as build_subset, but for a specific, already-decided list of words instead of
+    picking which words to use by instance count. Used to top up words that already have some
+    clips downloaded (see word_level_video.py's --top-up-existing) with more instances, without
+    changing which words are in the vocabulary. Any wanted gloss not found in all_glosses (typo,
+    or it's just not in WLASL) is silently skipped rather than erroring, easier to just not use a
+    word than crash the whole run over one bad name."""
+    by_gloss = {g["gloss"]: g for g in all_glosses}
+    subset = []
+    for gloss in wanted_glosses:
+        gloss_entry = by_gloss.get(gloss)
+        if gloss_entry is None:
+            continue
+        trimmed = dict(gloss_entry)
+        trimmed["instances"] = gloss_entry["instances"][:max_instances_per_word]
+        subset.append(trimmed)
+    return subset
+
+
 def save_subset(num_words=100, max_instances_per_word=10, force=False) -> Path:
     metadata_path = download_metadata(force=force)
     all_glosses = json.loads(metadata_path.read_text())
     subset = build_subset(all_glosses, num_words, max_instances_per_word)
+    return _write_subset(subset)
 
+
+def save_subset_for_glosses(wanted_glosses, max_instances_per_word=10, force=False) -> Path:
+    metadata_path = download_metadata(force=force)
+    all_glosses = json.loads(metadata_path.read_text())
+    subset = build_subset_for_glosses(all_glosses, wanted_glosses, max_instances_per_word)
+    return _write_subset(subset)
+
+
+def _write_subset(subset) -> Path:
     SUBSET_PATH.write_text(json.dumps(subset, indent=2))
     total_videos = sum(len(g["instances"]) for g in subset)
     print(f"{len(subset)} words, {total_videos} video instances -> {SUBSET_PATH}")

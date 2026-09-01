@@ -21,6 +21,6 @@ Not the "official" WLASL100 split some papers use, that's a fixed word list publ
 
 A lot of the video links in this dataset are dead now (old ASL dictionary sites that have since shut down or started blocking hotlinking, plus a chunk of the clips are unlisted/removed YouTube videos), `src/video_downloader.py` is written to expect that: it downloads whatever it can, skips and logs the rest, no need for every clip to succeed for this to work. YouTube-hosted clips need `yt-dlp` installed separately to fetch.
 
-Downloaded clips go in `data/raw/videos/<word>/<video_id>.mp4`, extracted keypoint sequences go in `data/processed/<word>/<video_id>.npy`, neither committed (see `.gitignore`).
+Downloaded clips go in `data/raw/videos/<word>/<video_id>.mp4`, extracted keypoint sequences go in `data/processed/<word>/<video_id>.npy`, neither committed (see `.gitignore`), both reproducible by re-running `word_level_video.py`.
 
 `src/pose_extraction.py` turns each clip into a keypoint sequence using MediaPipe's Tasks API (`PoseLandmarker` + `HandLandmarker`), which needs two small model bundle files. Those get downloaded automatically the first time it runs, into `data/mediapipe_models/` (also not committed, same reasoning as everything else here, easy to re-download, no reason to bloat the repo with them).

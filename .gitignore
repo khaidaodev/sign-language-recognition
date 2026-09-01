@@ -9,6 +9,7 @@ venv/
 # Data (downloaded, not committed)
 data/raw/
 data/mediapipe_models/
+data/processed/
 *.csv
 
 # Models / results
