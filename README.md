@@ -86,6 +86,10 @@ python3 src/train_sequence_model.py                                        # tra
 
 Kaggle has a well known "Sign Language MNIST" dataset. Couldn't get the Kaggle download working where I was building this, so I grabbed the same data from a GitHub copy instead, more detail in `data/README.md`.
 
+## Testing and git
+
+There's a `tests/` folder with real pytest tests, covers pose extraction, the sequence dataset loader, the LSTM model, and the training loop against made-up keypoint data (that's what let the pipeline get checked before real downloads even worked, see stage 2 above). 67 tests, and I run them before committing anything that touches the core logic. Git-wise the commits track the actual stages as they happened, metadata and downloading, then pose extraction, then the sequence model and training script, then the normalization/augmentation/vocabulary fixes that got the val accuracy up, so the history's basically a log of the debugging that's written up above.
+
 ## Tools used
 
 Python, PyTorch for the CNN, pandas for loading the data, matplotlib for the plots. MediaPipe (Tasks API - `PoseLandmarker`/`HandLandmarker`, the old `solutions` API this used to use got dropped from newer mediapipe releases) and OpenCV for the stage 2 keypoint extraction.
