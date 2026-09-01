@@ -52,31 +52,45 @@ def download_direct(url: str, out_path: Path) -> bool:
         return False
 
 
+def _ffmpeg_location() -> str | None:
+    """yt-dlp needs ffmpeg to merge separate video+audio streams into one file (see
+    download_youtube below). If it's not on PATH, fall back to the standalone binary the
+    imageio-ffmpeg pip package bundles, no admin install or package manager needed, just
+    `pip3 install imageio-ffmpeg`. Returns None if neither is available (yt-dlp will then just
+    fail on any video that actually needs merging, same as before)."""
+    if shutil.which("ffmpeg") is not None:
+        return None  # yt-dlp finds it on PATH itself, nothing extra to pass
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except ImportError:
+        return None
+
+
 def download_youtube(url: str, out_path: Path) -> bool:
     if shutil.which("yt-dlp") is None:
         print(f"  skipped, yt-dlp not installed: {url}")
         return False
+
+    command = [
+        "yt-dlp",
+        # plenty of YouTube videos these days don't have a single combined video+audio mp4
+        # format (just requesting "-f mp4" fails for those), so this asks for the best mp4
+        # video + best m4a audio and has yt-dlp merge them (needs ffmpeg), falling back to
+        # whatever's best if that specific combo isn't available
+        "-f",
+        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "--merge-output-format",
+        "mp4",
+    ]
+    ffmpeg_location = _ffmpeg_location()
+    if ffmpeg_location:
+        command += ["--ffmpeg-location", ffmpeg_location]
+    command += ["-o", str(out_path), url]
+
     try:
-        subprocess.run(
-            [
-                "yt-dlp",
-                # plenty of YouTube videos these days don't have a single combined
-                # video+audio mp4 format (just requesting "-f mp4" fails for those), so this
-                # asks for the best mp4 video + best m4a audio and has yt-dlp merge them (needs
-                # ffmpeg installed), falling back to whatever's best if that specific combo isn't
-                # available
-                "-f",
-                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "--merge-output-format",
-                "mp4",
-                "-o",
-                str(out_path),
-                url,
-            ],
-            check=True,
-            capture_output=True,
-            timeout=120,
-        )
+        subprocess.run(command, check=True, capture_output=True, timeout=120)
         return out_path.exists()
     except subprocess.CalledProcessError as e:
         # yt-dlp's actual complaint (age-restricted, blocked, video removed, needs sign-in, etc.)

@@ -14,7 +14,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import video_downloader  # noqa: E402
-from video_downloader import download_youtube, extract_yt_dlp_error, is_youtube  # noqa: E402
+from video_downloader import (  # noqa: E402
+    _ffmpeg_location,
+    download_youtube,
+    extract_yt_dlp_error,
+    is_youtube,
+)
 
 
 def test_is_youtube_recognises_full_urls():
@@ -40,6 +45,26 @@ def test_extract_yt_dlp_error_handles_missing_stderr():
 
 def test_extract_yt_dlp_error_handles_blank_stderr():
     assert extract_yt_dlp_error(b"   \n  \n") == "no error output"
+
+
+def test_ffmpeg_location_returns_none_when_ffmpeg_is_already_on_path(monkeypatch):
+    monkeypatch.setattr(video_downloader.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    assert _ffmpeg_location() is None
+
+
+def test_ffmpeg_location_falls_back_to_imageio_ffmpeg_when_ffmpeg_is_missing(monkeypatch):
+    monkeypatch.setattr(video_downloader.shutil, "which", lambda name: None)
+    fake_imageio_ffmpeg = type(
+        "module", (), {"get_ffmpeg_exe": staticmethod(lambda: "/fake/path/to/ffmpeg")}
+    )
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", fake_imageio_ffmpeg)
+    assert _ffmpeg_location() == "/fake/path/to/ffmpeg"
+
+
+def test_ffmpeg_location_returns_none_when_neither_is_available(monkeypatch):
+    monkeypatch.setattr(video_downloader.shutil, "which", lambda name: None)
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)  # simulates it not being installed
+    assert _ffmpeg_location() is None
 
 
 def test_download_youtube_skips_when_yt_dlp_is_not_installed(tmp_path, monkeypatch, capsys):
