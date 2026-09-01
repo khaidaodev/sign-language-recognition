@@ -8,12 +8,15 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pose_extraction import FRAME_VECTOR_SIZE, HAND_LANDMARKS, POSE_LANDMARKS  # noqa: E402
 from sequence_dataset import (  # noqa: E402
     KeypointSequenceDataset,
+    MirrorAugmentedDataset,
+    mirror_keypoints,
     normalize_keypoints,
     pad_or_truncate,
 )
@@ -105,6 +108,108 @@ def test_normalize_keypoints_leaves_visibility_untouched():
     pose = normalized[: POSE_LANDMARKS * 4].reshape(POSE_LANDMARKS, 4)
     assert pose[11, 3] == pytest.approx(1.0)
     assert pose[12, 3] == pytest.approx(1.0)
+
+
+def _frame_with_distinct_landmarks():
+    """Every pose/hand landmark gets its own unique x value, so a test can check exactly which
+    landmark's data ended up where after mirroring, rather than just checking shapes."""
+    frame = _blank_frame()
+    pose = frame[: POSE_LANDMARKS * 4].reshape(POSE_LANDMARKS, 4)
+    for i in range(POSE_LANDMARKS):
+        pose[i] = [i * 0.01, 0.5, 0.0, 1.0]
+    left_hand = frame[POSE_LANDMARKS * 4 : POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3].reshape(
+        HAND_LANDMARKS, 3
+    )
+    right_hand = frame[POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3 :].reshape(HAND_LANDMARKS, 3)
+    for i in range(HAND_LANDMARKS):
+        left_hand[i] = [i * 0.01 + 0.5, 0.2, 0.0]
+        right_hand[i] = [i * 0.01 + 0.7, 0.3, 0.0]
+    frame[: POSE_LANDMARKS * 4] = pose.flatten()
+    frame[POSE_LANDMARKS * 4 : POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3] = left_hand.flatten()
+    frame[POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3 :] = right_hand.flatten()
+    return frame
+
+
+def test_mirror_keypoints_negates_x_and_swaps_left_right_pose_landmarks():
+    frame = _frame_with_distinct_landmarks()
+    mirrored = mirror_keypoints(np.stack([frame]))[0]
+    pose = mirrored[: POSE_LANDMARKS * 4].reshape(POSE_LANDMARKS, 4)
+
+    assert pose[0, 0] == pytest.approx(0.0)  # nose has no pair, just gets negated (0 stays 0)
+    # left shoulder (11) should now hold right shoulder's (12) old x, negated, and vice versa
+    assert pose[11, 0] == pytest.approx(-12 * 0.01)
+    assert pose[12, 0] == pytest.approx(-11 * 0.01)
+    assert pose[15, 0] == pytest.approx(-16 * 0.01)  # left/right wrist
+    # y, z, visibility untouched
+    assert pose[11, 1:].tolist() == pytest.approx([0.5, 0.0, 1.0])
+
+
+def test_mirror_keypoints_swaps_hand_blocks():
+    frame = _frame_with_distinct_landmarks()
+    mirrored = mirror_keypoints(np.stack([frame]))[0]
+    left_hand = mirrored[POSE_LANDMARKS * 4 : POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3].reshape(
+        HAND_LANDMARKS, 3
+    )
+    right_hand = mirrored[POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3 :].reshape(HAND_LANDMARKS, 3)
+
+    # the mirrored "left hand" is the old right hand, x negated, y/z unchanged
+    assert left_hand[0].tolist() == pytest.approx([-0.7, 0.3, 0.0])
+    assert right_hand[0].tolist() == pytest.approx([-0.5, 0.2, 0.0])
+
+
+def test_mirror_keypoints_is_its_own_inverse():
+    # mirroring a mirror should give back the original: negating x twice cancels out, and
+    # swapping each left/right pair twice puts everything back where it started
+    frame = _frame_with_distinct_landmarks()
+    twice_mirrored = mirror_keypoints(mirror_keypoints(np.stack([frame])))[0]
+    assert twice_mirrored == pytest.approx(frame)
+
+
+def test_mirror_keypoints_leaves_a_padded_zero_frame_zero():
+    frame = _blank_frame()
+    mirrored = mirror_keypoints(np.stack([frame]))[0]
+    assert np.all(mirrored == 0)
+
+
+class _ListDataset:
+    """Minimal stand-in for a Dataset, just wraps a plain list of (sequence, label) tuples."""
+
+    def __init__(self, items):
+        self.items = items
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, idx):
+        return self.items[idx]
+
+
+def test_mirror_augmented_dataset_doubles_the_length():
+    base = _ListDataset([(torch.zeros(1, FRAME_VECTOR_SIZE), 0), (torch.zeros(1, FRAME_VECTOR_SIZE), 1)])
+    augmented = MirrorAugmentedDataset(base)
+    assert len(augmented) == 4
+
+
+def test_mirror_augmented_dataset_even_indices_are_the_originals():
+    frame = torch.from_numpy(_frame_with_distinct_landmarks()).float().unsqueeze(0)
+    base = _ListDataset([(frame, 7)])
+    augmented = MirrorAugmentedDataset(base)
+
+    sequence, label = augmented[0]
+    assert label == 7
+    assert torch.equal(sequence, frame)
+
+
+def test_mirror_augmented_dataset_odd_indices_are_mirrored():
+    frame_array = _frame_with_distinct_landmarks()
+    frame = torch.from_numpy(frame_array).float().unsqueeze(0)
+    base = _ListDataset([(frame, 7)])
+    augmented = MirrorAugmentedDataset(base)
+
+    sequence, label = augmented[1]
+    assert label == 7
+    expected = mirror_keypoints(np.stack([frame_array]))
+    assert sequence.numpy() == pytest.approx(expected)
 
 
 @pytest.fixture

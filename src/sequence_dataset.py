@@ -90,6 +90,57 @@ def normalize_keypoints(sequence: np.ndarray) -> np.ndarray:
     return sequence
 
 
+# left/right landmark pairs in MediaPipe's 33-point pose topology (landmark 0, the nose, has no
+# pair, it's on the midline). Needed to mirror a pose correctly, not just flip x, "left shoulder"
+# has to become "right shoulder" too, otherwise a flipped skeleton would have its labels crossed.
+POSE_LEFT_RIGHT_PAIRS = [
+    (1, 4), (2, 5), (3, 6), (7, 8), (9, 10), (11, 12), (13, 14), (15, 16),
+    (17, 18), (19, 20), (21, 22), (23, 24), (25, 26), (27, 28), (29, 30), (31, 32),
+]
+
+
+def mirror_keypoints(sequence: np.ndarray) -> np.ndarray:
+    """Returns the left-right mirrored version of a keypoint sequence: same sign, as if
+    performed facing the other way (or by someone who signs with their other hand). This is a
+    standard augmentation for pose-based sign recognition, doubling the effective amount of
+    training data for free, no new downloads needed, a mirrored real clip is still a completely
+    legitimate example of that sign.
+
+    Only makes sense to run this after normalize_keypoints, since mirroring is just flipping the
+    sign of every x coordinate, that's only a clean flip-in-place once everything is centered on
+    the body (shoulder midpoint at x=0) rather than positioned somewhere arbitrary in the camera
+    frame.
+    """
+    mirrored = sequence.astype(np.float32).copy()
+    for frame in mirrored:
+        pose = frame[: POSE_LANDMARKS * 4].reshape(POSE_LANDMARKS, 4)
+        left_hand = frame[POSE_LANDMARKS * 4 : POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3].reshape(
+            HAND_LANDMARKS, 3
+        )
+        right_hand = frame[POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3 :].reshape(HAND_LANDMARKS, 3)
+
+        pose[:, 0] = -pose[:, 0]
+        for left_idx, right_idx in POSE_LEFT_RIGHT_PAIRS:
+            pose[[left_idx, right_idx]] = pose[[right_idx, left_idx]]
+
+        left_hand[:, 0] = -left_hand[:, 0]
+        right_hand[:, 0] = -right_hand[:, 0]
+
+        # left_hand/right_hand are views into frame, not copies, so grab flattened copies of
+        # both *before* writing either back, otherwise writing the first one back corrupts the
+        # view the second one still needs to read from (they'd both end up holding the same data)
+        new_left_hand = right_hand.flatten()
+        new_right_hand = left_hand.flatten()
+
+        frame[: POSE_LANDMARKS * 4] = pose.flatten()
+        # whichever hand was on the left is now on the right side of the mirrored image, so the
+        # two hand blocks swap places, not just their x values
+        frame[POSE_LANDMARKS * 4 : POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3] = new_left_hand
+        frame[POSE_LANDMARKS * 4 + HAND_LANDMARKS * 3 :] = new_right_hand
+
+    return mirrored
+
+
 def pad_or_truncate(sequence: np.ndarray, max_frames: int = MAX_FRAMES) -> np.ndarray:
     """Makes any (num_frames, feature_size) array exactly (max_frames, feature_size): pads with
     zero rows if it's short, cuts off the end if it's long."""
@@ -157,6 +208,30 @@ class KeypointSequenceDataset(Dataset):
     @property
     def num_classes(self) -> int:
         return len(self.gloss_to_label)
+
+
+class MirrorAugmentedDataset(Dataset):
+    """Wraps a dataset (meant to be a *training* split, see below) of real clips and doubles it:
+    every real clip's index maps to two items here, the original and its left-right mirrored
+    version (mirror_keypoints above).
+
+    Only ever wrap a training split with this, never validation. If a mirrored copy of a clip
+    ended up in the validation set while training saw the original (or vice versa), that's the
+    model getting evaluated on something awfully close to what it trained on, val accuracy would
+    look better than the model actually generalizes."""
+
+    def __init__(self, base_dataset):
+        self.base_dataset = base_dataset
+
+    def __len__(self) -> int:
+        return len(self.base_dataset) * 2
+
+    def __getitem__(self, idx: int):
+        real_idx, mirror = divmod(idx, 2)
+        sequence, label = self.base_dataset[real_idx]
+        if mirror:
+            sequence = torch.from_numpy(mirror_keypoints(sequence.numpy())).float()
+        return sequence, label
 
 
 if __name__ == "__main__":
