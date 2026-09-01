@@ -32,7 +32,7 @@ The pipeline:
 - `src/word_level_video.py` runs all three of those back to back.
 - `src/sequence_dataset.py` loads whatever's in `data/processed/` into something PyTorch can actually train on: normalizes every frame (centers on the shoulder midpoint, scales by shoulder width, so the same sign performed in a different spot in frame or a different distance from the camera looks the same to the model), pads/cuts every clip to a fixed length, and caps the vocabulary to the best-covered words rather than training on every word regardless of how little data is behind it.
 - `src/sequence_model.py` is the actual model: a bidirectional LSTM (a type of neural network built for sequences, it reads the keypoints frame by frame and keeps a running "memory" of what it's seen, forwards and backwards through the clip) that takes a keypoint sequence and predicts which word it is.
-- `src/train_sequence_model.py` trains it: 80/20 train/val split, mirror-flips every training clip as a free extra example (left-right mirror augmentation, applied only to the training half so validation stays honest), saves the best checkpoint and the training history.
+- `src/train_sequence_model.py` trains it: 80/20 train/val split, on-the-fly augmentation on the training half only (a coin-flip left-right mirror plus small coordinate jitter, re-rolled fresh every time a clip is seen, so the same real clip looks a bit different epoch to epoch), saves the best checkpoint and the training history.
 
 ### Real results, and why the number is what it is
 
@@ -45,9 +45,21 @@ Fixed both, one at a time, checking the real number after each change:
 | Raw keypoints, 100 words | 4.6% | ~1% |
 | + shoulder-centered normalization, capped to the 40 best-covered words | 9.7% | 2.5% |
 | + topped up those 40 words with more real clips (7.8 → 12 avg per word) | 10.5% | 2.5% |
-| + left-right mirror augmentation on the training split | **11.6%** | 2.5% |
+| + left-right mirror augmentation on the training split | 11.6% | 2.5% |
 
-So: roughly **4.6x better than random guessing** on a real 40-word vocabulary, from genuinely downloaded video, not synthetic data. Each change moved the number, but training accuracy still climbs well past validation accuracy by the end (41% vs 11.6% in the last run), so this is still a data-limited problem: WLASL is an old dataset with a lot of dead links, and even the best-covered words in this subset only have 10-25 real instances in the whole dataset, there's a hard ceiling on how much more a single word can offer without a different data source entirely. Growing the vocabulary or the per-word clip count further (`--top-up-existing`, or a fresh `--num-words` run) is the direct way to keep pushing this number up over time.
+At that point training accuracy was still climbing well past validation accuracy (41% vs 11.6%), so this was still a data-limited problem: WLASL is an old dataset with a lot of dead links. Tried to fix that directly first, `--top-up-existing` with a higher cap and a fixed YouTube downloader (it was asking for a video/audio format combo a lot of modern YouTube videos don't have, plus no ffmpeg installed to merge separate streams) found real, previously-unfetched instances, but the actual videos behind them turned out to be genuinely gone (deleted, region-blocked, dead hosting), 0 new clips landed despite the fixes actually working correctly. Broadening the search to 50 more words WLASL lists (ranks 101-150 by instance count) didn't turn up a healthier alternative set either, same top word list came out on top.
+
+So more data for this specific vocabulary had hit a real ceiling, roughly 12 real clips per word. The next lever was the vocabulary size itself: is 40 words actually the right target, or is a smaller, better-supported vocabulary a better trade? Tested 15/20/25/30/40 words, each across 3 random seeds (single-seed numbers on a validation set this small, 40-90 clips, are noisy enough to be misleading on their own):
+
+| Vocabulary size | Val accuracy across seeds | Average | Random baseline |
+|---|---|---|---|
+| 15 words | 14.3%, 16.7%, 16.7% | 15.9% | 6.7% |
+| **20 words** | 16.7%, 20.4%, **22.2%** | **19.8%** | 5.0% |
+| 25 words | 12.1% (noisy, small val set) | ~12% | 4.0% |
+| 30 words | (not fully tested) | - | 3.3% |
+| 40 words | 10.5%, 11.6% | ~11% | 2.5% |
+
+20 words came out clearly and consistently ahead, **~4x better than random guessing**, roughly double the 40-word result, for giving up half the vocabulary. Makes sense: with only ~12-14 real clips per word either way, the number of classes the model has to tell apart matters more than a slightly bigger word list. `MAX_WORDS` in `train_sequence_model.py` is set to 20 now, with the reasoning and numbers in a comment there too.
 
 Model, data loader, and training loop were all unit tested against made-up keypoint data before ever touching real downloads, to make sure the wiring (shapes, normalization, augmentation, checkpoint saving) was correct independent of whether the data behind it was any good, see `tests/`.
 
@@ -65,9 +77,9 @@ Downloads the dataset automatically the first time (a couple of CSV files, not h
 For stage 2 (once there's actually data downloaded, see above):
 
 ```bash
-python3 src/word_level_video.py --num-words 100 --max-per-word 10        # downloads clips, extracts keypoints
-python3 src/word_level_video.py --top-up-existing 40 --max-per-word 25   # optional: more clips for the best words
-python3 src/train_sequence_model.py                                       # trains the LSTM on whatever downloaded
+python3 src/word_level_video.py --num-words 150 --max-per-word 10         # downloads clips, extracts keypoints
+python3 src/word_level_video.py --top-up-existing 20 --max-per-word 30    # optional: more clips for the best words
+python3 src/train_sequence_model.py                                        # trains the LSTM on whatever downloaded
 ```
 
 ## Where the data's from

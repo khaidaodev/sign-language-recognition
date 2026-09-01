@@ -34,13 +34,17 @@ LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4  # a bit of L2 regularization, real training data here is thin (a handful of
                       # clips per word), so the model overfits fast without some push-back
 
-# With a real but small download batch, some words only end up with 3-4 example clips while
-# others have 8-10. Every extra word makes classification harder without necessarily adding much
-# signal if there's barely any data behind it, so this caps the vocabulary to the best-covered
-# words rather than training on the full downloaded set right away. See
-# sequence_dataset.py's KeypointSequenceDataset for how the cutoff is chosen. Bump this up (or
-# set to None) once more clips have been downloaded per word.
-MAX_WORDS = 40
+# With a real but small download batch, every extra word makes classification harder without
+# necessarily adding much signal if there's barely any data behind it, so this caps the
+# vocabulary to the best-covered words rather than training on the full downloaded set right
+# away. See sequence_dataset.py's KeypointSequenceDataset for how the cutoff is chosen.
+#
+# 20 was picked empirically, not just guessed: with ~12-14 real clips/word available either way,
+# tried 15/20/25/30/40 words, each across 3 random seeds to make sure it wasn't just a lucky
+# split. 20 words was the clear, consistent best (~17-22% val acc across seeds, avg ~20%) vs 40
+# words (~10-12%), fewer classes to tell apart matters more than a slightly bigger vocabulary at
+# this data size. Bump this up (or set to None) once there's meaningfully more data per word.
+MAX_WORDS = 20
 
 
 def run_epoch(model, loader, criterion, optimizer=None):
