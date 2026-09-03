@@ -65,6 +65,10 @@ Model, data loader, and training loop were all unit tested against made-up keypo
 
 Also still want a live demo where you show your webcam a sign and it guesses in real time, that's the next big piece.
 
+**Update:** built half of that, but it's not fully working yet, calling this a milestone rather than done. `demo/webcam_demo.py` points MediaPipe's hand landmarker at a live webcam feed (same model as stage 2's keypoint extraction, just run frame-by-frame on a live camera instead of a saved video), crops around the detected hand, shrinks it to 28x28 to match what the CNN was trained on, and overlays its guess + confidence on the video window. All the actual logic (the crop/resize/normalize step, and turning the model's output back into a letter) is unit tested and correct, 8 new tests in `tests/test_webcam_demo.py`. What's not confirmed working yet: on my Mac, `cv2.VideoCapture` opens the camera fine but `.read()` never actually returns a frame, so the live window never shows anything. Camera permission is granted, and it's not a code bug in the logic above, it looks like an OpenCV/macOS camera backend issue, still tracking it down. Once that's sorted this becomes a genuinely working live demo with no further changes needed to the detection/model code.
+
+A live demo for the stage 2 word-level model is a separate, harder piece on top of that: that model needs a whole clip's worth of frames to make a guess, not one still frame, so it needs some kind of sliding window over live video rather than a single crop-and-classify step, and its accuracy is still only ~22% on 20 words (see above), so a live version of it would mostly demo how often it's wrong right now. Left as future work.
+
 ## How to run this yourself
 
 ```bash
@@ -73,6 +77,14 @@ python3 src/cnn_baseline.py
 ```
 
 Downloads the dataset automatically the first time (a couple of CSV files, not huge), trains for 8 epochs, prints the results, saves the plots.
+
+For the live letter demo (needs a webcam):
+
+```bash
+python3 demo/webcam_demo.py
+```
+
+Needs `models/cnn_baseline.pt` to exist first (the `cnn_baseline.py` command above makes it). Press `q` in the video window to quit. See the note above though, this isn't confirmed working end-to-end on real hardware yet.
 
 For stage 2 (once there's actually data downloaded, see above):
 
@@ -88,7 +100,7 @@ Kaggle has a well known "Sign Language MNIST" dataset. Couldn't get the Kaggle d
 
 ## Testing and git
 
-There's a `tests/` folder with real pytest tests, covers pose extraction, the sequence dataset loader, the LSTM model, and the training loop against made-up keypoint data (that's what let the pipeline get checked before real downloads even worked, see stage 2 above). 67 tests, and I run them before committing anything that touches the core logic. Git-wise the commits track the actual stages as they happened, metadata and downloading, then pose extraction, then the sequence model and training script, then the normalization/augmentation/vocabulary fixes that got the val accuracy up, so the history's basically a log of the debugging that's written up above.
+There's a `tests/` folder with real pytest tests, covers pose extraction, the sequence dataset loader, the LSTM model, and the training loop against made-up keypoint data (that's what let the pipeline get checked before real downloads even worked, see stage 2 above). 75 tests, and I run them before committing anything that touches the core logic. Git-wise the commits track the actual stages as they happened, metadata and downloading, then pose extraction, then the sequence model and training script, then the normalization/augmentation/vocabulary fixes that got the val accuracy up, so the history's basically a log of the debugging that's written up above.
 
 ## Tools used
 
