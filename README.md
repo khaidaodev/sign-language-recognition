@@ -65,7 +65,9 @@ Model, data loader, and training loop were all unit tested against made-up keypo
 
 Also still want a live demo where you show your webcam a sign and it guesses in real time, that's the next big piece.
 
-**Update:** built half of that, but it's not fully working yet, calling this a milestone rather than done. `demo/webcam_demo.py` points MediaPipe's hand landmarker at a live webcam feed (same model as stage 2's keypoint extraction, just run frame-by-frame on a live camera instead of a saved video), crops around the detected hand, shrinks it to 28x28 to match what the CNN was trained on, and overlays its guess + confidence on the video window. All the actual logic (the crop/resize/normalize step, and turning the model's output back into a letter) is unit tested and correct, 8 new tests in `tests/test_webcam_demo.py`. What's not confirmed working yet: on my Mac, `cv2.VideoCapture` opens the camera fine but `.read()` never actually returns a frame, so the live window never shows anything. Camera permission is granted, and it's not a code bug in the logic above, it looks like an OpenCV/macOS camera backend issue, still tracking it down. Once that's sorted this becomes a genuinely working live demo with no further changes needed to the detection/model code.
+**Update:** built it. `demo/webcam_demo.py` points MediaPipe's hand landmarker at a live webcam feed (same model as stage 2's keypoint extraction, just run frame-by-frame on a live camera instead of a saved video), crops around the detected hand, shrinks it to 28x28 to match what the CNN was trained on, and overlays its guess + confidence live on the video window. All the actual logic (the crop/resize/normalize step, and turning the model's output back into a letter) is unit tested, 8 new tests in `tests/test_webcam_demo.py`, and the whole thing works end-to-end on real hardware.
+
+One gotcha that cost a while to track down: `cv2.VideoCapture` needs the AVFoundation backend passed explicitly on macOS (`cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)`), letting OpenCV pick automatically opened the camera fine but `.read()` never actually returned a frame. Also, if something with a virtual camera (OBS, in my case) is installed, it can register its own camera device that gets picked up instead of the real one, worth quitting that first if the same thing happens to you.
 
 A live demo for the stage 2 word-level model is a separate, harder piece on top of that: that model needs a whole clip's worth of frames to make a guess, not one still frame, so it needs some kind of sliding window over live video rather than a single crop-and-classify step, and its accuracy is still only ~22% on 20 words (see above), so a live version of it would mostly demo how often it's wrong right now. Left as future work.
 
@@ -84,7 +86,7 @@ For the live letter demo (needs a webcam):
 python3 demo/webcam_demo.py
 ```
 
-Needs `models/cnn_baseline.pt` to exist first (the `cnn_baseline.py` command above makes it). Press `q` in the video window to quit. See the note above though, this isn't confirmed working end-to-end on real hardware yet.
+Needs `models/cnn_baseline.pt` to exist first (the `cnn_baseline.py` command above makes it). Press `q` in the video window to quit.
 
 For stage 2 (once there's actually data downloaded, see above):
 

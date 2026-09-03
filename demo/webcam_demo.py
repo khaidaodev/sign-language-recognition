@@ -104,7 +104,11 @@ def run_demo(camera_index: int = 0) -> None:
 
     model = _load_model()
     hand_landmarker = _make_hand_landmarker()
-    cap = cv2.VideoCapture(camera_index)
+    # explicit AVFoundation backend: on macOS, letting OpenCV pick a backend automatically was
+    # unreliable here, camera opened fine (isOpened() True) but .read() never actually returned a
+    # frame. Also worth knowing: if something else with a virtual camera (e.g. OBS) is running,
+    # it can register its own camera device and get picked up instead of the real one.
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_AVFOUNDATION)
     if not cap.isOpened():
         raise RuntimeError(f"couldn't open camera {camera_index}")
 
