@@ -19,8 +19,14 @@ Needs models/cnn_baseline.pt to exist first, run `python3 src/cnn_baseline.py` i
 Run it with:
     python3 demo/webcam_demo.py
 Press 'q' in the video window to quit.
+
+macOS sometimes offers more than one camera device, e.g. an iPhone signed into the same Apple ID
+can appear as a webcam via Continuity Camera, and camera index 0 isn't always the real built-in
+one. If the picture looks wrong, pass --camera-index 1, 2, etc. until you land on the right one:
+    python3 demo/webcam_demo.py --camera-index 1
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -46,24 +52,49 @@ INDEX_TO_LETTER = {i: LABEL_TO_LETTER[label] for i, label in enumerate(CLASS_LAB
 def hand_bounding_box(landmarks, frame_width, frame_height, padding=40):
     """Takes a list of MediaPipe hand landmarks (normalized 0-1 x/y coords) and returns a pixel
     space box (left, top, right, bottom) around the hand, padded out a bit so the crop isn't
-    drawn right up against the fingertips, and clamped so it never goes outside the frame."""
+    drawn right up against the fingertips, forced square (pads the shorter side out to match the
+    longer one, centered) so shrinking it to the model's 28x28 input doesn't stretch/squash the
+    hand out of shape, and clamped so it never goes outside the frame."""
     xs = [lm.x * frame_width for lm in landmarks]
     ys = [lm.y * frame_height for lm in landmarks]
 
-    left = max(0, int(min(xs) - padding))
-    top = max(0, int(min(ys) - padding))
-    right = min(frame_width, int(max(xs) + padding))
-    bottom = min(frame_height, int(max(ys) + padding))
+    left = min(xs) - padding
+    right = max(xs) + padding
+    top = min(ys) - padding
+    bottom = max(ys) + padding
+
+    width, height = right - left, bottom - top
+    if width > height:
+        extra = (width - height) / 2
+        top -= extra
+        bottom += extra
+    else:
+        extra = (height - width) / 2
+        left -= extra
+        right += extra
+
+    left = max(0, int(left))
+    top = max(0, int(top))
+    right = min(frame_width, int(right))
+    bottom = min(frame_height, int(bottom))
     return left, top, right, bottom
 
 
 def crop_to_model_input(gray_frame, box):
     """Crops a grayscale frame down to the given box, resizes to 28x28 and scales pixels to
     [0, 1], the exact preprocessing load_split() applies in src/data_loading.py. Returns a
-    (1, 1, 28, 28) float32 tensor, ready to feed straight into SmallCNN."""
+    (1, 1, 28, 28) float32 tensor, ready to feed straight into SmallCNN.
+
+    Also runs histogram equalization (spreads out the brightness values in the image so they
+    cover the full 0-255 range instead of being bunched up) before resizing. The training photos
+    (sign language MNIST) were shot under harsh, one-directional studio lighting and come out
+    very high contrast, a normal webcam under normal room lighting looks much flatter by
+    comparison, and the model never saw that during training. Equalizing pushes a live, flatly
+    lit hand towards the kind of high-contrast look the model actually learned on."""
     left, top, right, bottom = box
     crop = gray_frame[top:bottom, left:right]
-    resized = cv2.resize(crop, (28, 28), interpolation=cv2.INTER_AREA)
+    equalized = cv2.equalizeHist(crop)
+    resized = cv2.resize(equalized, (28, 28), interpolation=cv2.INTER_AREA)
     normalized = resized.astype(np.float32) / 255.0
     tensor = torch.from_numpy(normalized)
     return tensor.unsqueeze(0).unsqueeze(0)  # add channel + batch dims -> (1, 1, 28, 28)
@@ -106,8 +137,9 @@ def run_demo(camera_index: int = 0) -> None:
     hand_landmarker = _make_hand_landmarker()
     # explicit AVFoundation backend: on macOS, letting OpenCV pick a backend automatically was
     # unreliable here, camera opened fine (isOpened() True) but .read() never actually returned a
-    # frame. Also worth knowing: if something else with a virtual camera (e.g. OBS) is running,
-    # it can register its own camera device and get picked up instead of the real one.
+    # frame. Also worth knowing: if something else with a virtual camera (e.g. OBS, or an iPhone
+    # via Continuity Camera) is active, it can register its own camera device and get picked up
+    # instead of the real one, use --camera-index to pick a different one if that happens.
     cap = cv2.VideoCapture(camera_index, cv2.CAP_AVFOUNDATION)
     if not cap.isOpened():
         raise RuntimeError(f"couldn't open camera {camera_index}")
@@ -127,7 +159,9 @@ def run_demo(camera_index: int = 0) -> None:
                     break
                 continue
             consecutive_failed_reads = 0
-            frame = cv2.flip(frame, 1)  # mirror it, feels more natural to sign in front of
+            # NOT mirroring this: the training photos are normal (non-mirrored) shots of a hand,
+            # so mirroring here would feed the model a backwards version of every letter you show
+            # it, which is close to what was happening before this fix
             height, width = frame.shape[:2]
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -170,5 +204,18 @@ def run_demo(camera_index: int = 0) -> None:
         cv2.destroyAllWindows()
 
 
+def _parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--camera-index",
+        type=int,
+        default=0,
+        help="which camera device to use (default 0). macOS can expose more than one, e.g. an "
+             "iPhone via Continuity Camera, try 1, 2, etc. if 0 picks the wrong one.",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    run_demo()
+    args = _parse_args()
+    run_demo(camera_index=args.camera_index)

@@ -31,9 +31,22 @@ class FakeLandmark:
 
 def test_hand_bounding_box_pads_around_the_landmarks():
     landmarks = [FakeLandmark(0.5, 0.5), FakeLandmark(0.6, 0.4)]
-    # frame is 200x100, so landmark pixels span x: 100-120, y: 40-50
+    # frame is 200x100, so landmark pixels span x: 100-120, y: 40-50, +/-10 padding gives a
+    # 40x30 box, which then gets squared up (extra padding added to the shorter side, split
+    # evenly) to 40x40 before clamping
     box = hand_bounding_box(landmarks, frame_width=200, frame_height=100, padding=10)
-    assert box == (90, 30, 130, 60)
+    assert box == (90, 25, 130, 65)
+
+
+def test_hand_bounding_box_is_always_square():
+    # a wide, short hand span (fingers spread sideways) shouldn't come out as a wide rectangle,
+    # squashing it to 28x28 later would distort the shape compared to the roughly-square
+    # training photos
+    landmarks = [FakeLandmark(0.2, 0.5), FakeLandmark(0.8, 0.55)]
+    left, top, right, bottom = hand_bounding_box(
+        landmarks, frame_width=1000, frame_height=1000, padding=20
+    )
+    assert (right - left) == (bottom - top)
 
 
 def test_hand_bounding_box_clamps_to_the_frame_edges():
@@ -74,6 +87,22 @@ def test_crop_to_model_input_normalizes_pixels_to_zero_one_range():
     assert torch.all(tensor <= 1.0)
     assert torch.all(tensor >= 0.0)
     assert torch.allclose(tensor, torch.ones_like(tensor))
+
+
+def test_crop_to_model_input_stretches_out_low_contrast_images():
+    # a flatly lit crop, two halves only 20 shades apart, standing in for a normal, room-lit
+    # webcam frame. the training photos (sign language MNIST) are shot under harsh studio
+    # lighting and come out very high contrast, so histogram equalization needs to spread a flat
+    # image like this one out towards the full range, not leave it as is. using two solid blocks
+    # rather than random noise so the contrast survives the resize down to 28x28 afterwards.
+    low_contrast = np.full((100, 100), 110, dtype=np.uint8)
+    low_contrast[50:, :] = 130
+    box = (0, 0, 100, 100)
+
+    tensor = crop_to_model_input(low_contrast, box)
+
+    assert tensor.min() < 0.3
+    assert tensor.max() > 0.7
 
 
 def test_predict_letter_returns_a_valid_letter_and_confidence():
